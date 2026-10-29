@@ -14,6 +14,7 @@ public class SmsService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         HttpServer.ensureStarted(getApplicationContext());
+        ProxyServer.ensureStarted(getApplicationContext());
         // kick a DB pull once in background (reads existing inbox via READ_SMS)
         Thread t = new Thread(new Runnable() {
             @Override

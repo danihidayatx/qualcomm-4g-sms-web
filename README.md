@@ -1,313 +1,298 @@
-# Qualcomm 4G USB Modem SMS Web UI & OTP Reader
+# Qualcomm 4G USB Modem SMS Web UI & OTP Reader (In-Modem APK)
 
-A universal, automated solution for **integrating an SMS Inbox and OTP extractor** (e.g. for carrier quota checks, 2FA/login OTPs) directly into Qualcomm 4G LTE USB modem sticks (**MSM8916, MSM8909, Snapdragon 410, UFI, Zhihe, etc.**) connected to **any Linux host** (PC, Mini PC, Server, SBC / Raspberry Pi / Orange Pi, OpenWrt, Debian VM, Proxmox, NAS, etc.).
+A single Android APK that runs **entirely on the modem itself** — no SBC, no Raspberry Pi, no
+Linux host, no Node.js, no systemd. The APK reverse-proxies the modem's stock Web UI
+(`cpeweb.apk`, NanoHTTPD on port 80), injects a floating **SMS Inbox & OTP Reader** widget
+into every page, and exposes a small token-protected JSON API.
 
-This solution is **vendor-agnostic**: it works dynamically with different modem stock Web UI variants (Wowi, Youdo, Zhihe, generic CPE, etc.) without requiring root exploits (*no Dirty COW*) and without modifying the modem's system partition (*zero brick risk*).
+Works on Qualcomm MSM8916 / Snapdragon 410 4G USB dongles (UFI003, UFI103, UFI JZ, Wowi,
+Youdo, Zhihe, generic CPE, etc.) running the stock Android 4.4.4 (API 19) firmware.
+**No root, no system-partition changes, no brick risk.**
 
 ---
+
+## How it works
+
+```
++----------------------------------------------------------+
+| Client Browser                                           |
+|   http://<MODEM_IP>:8081   (login + SMS/OTP widget)      |
+|   http://<MODEM_IP>:8081/api/sms   (JSON, for bots)      |
++---------------------------+------------------------------+
+                            | USB RNDIS (usb0)
+                            v
++----------------------------------------------------------+
+| Qualcomm 4G USB Modem (Android 4.4.4, API 19)            |
+|                                                          |
+| com.ufi.smsfwd (this APK)                                |
+|  :8081  Web UI proxy + widget injection + /api/sms       |
+|           \-> proxies 127.0.0.1:80 (cpeweb.apk UI)       |
+|                                                          |
+| SMS capture:                                             |
+|  1. SmsReceiver  — SMS_RECEIVED broadcast -> recv.txt    |
+|  2. DbPuller     — polls content://sms/inbox every 60s   |
+|                    and on demand (/api/sms?sync=1)       |
+|  log: /sdcard/ufi/recv.txt                               |
++----------------------------------------------------------+
+```
+
+Everything runs on the modem's own CPU via loopback. The only thing you need on your
+computer is `adb` (to install the APK and, optionally, to forward the port).
 
 ## Key Features
 
-1. **Secure Dual-Access Model:**
-   * **Authenticated Floating Widget (`http://localhost:8080/`):** Integrates cleanly into the modem's stock Web UI as an unobtrusive floating button in the bottom-right corner. It dynamically appears only after the user logs in, protecting SMS messages and OTP codes from view on the login screen.
-   * **Protected REST API (`/api/sms`):** Fully protected by session cookies for web browsers, and supports optional API token authentication (`SMS_API_TOKEN` via `.env`) for automation scripts, cron jobs, and notification bots (Telegram/WhatsApp). Unauthenticated access returns `HTTP 401 Unauthorized`.
-2. **Automatic OTP Detection & 1-Click Copy:**
-   * Automatically extracts numeric OTP codes (4-8 digits) from SMS message bodies.
-   * Highlights detected OTP codes with a prominent badge and provides a **"Copy"** button to copy codes directly to the clipboard.
-3. **Universal & Reusable Across Qualcomm Dongles:**
-   * Works across various Qualcomm Android-based LTE stick vendors.
-   * Automatically discovers the modem's gateway IP on the `usb0` interface (e.g., `192.168.18.1`, `192.168.0.1`).
-   * Normalizes non-standard HTTP headers emitted by the modem's internal NanoHTTPD server on-the-fly.
-4. **Lightweight & Privacy-Safe:**
-   * Built entirely using native Node.js standard libraries (zero third-party `npm` dependencies).
-   * Minimal host memory footprint (< 15 MB RAM).
-   * Sensitive SMS bodies and OTP codes are not written to persistent system logs.
-5. **Auto-Recovery Watchdog:**
-   * Built-in background watchdog checks modem status every 30 seconds.
-   * If the modem is unplugged or rebooted, the Android SMS daemon is automatically reinstated via ADB.
+1. **Stock UI + widget at one URL** — browse `http://<MODEM_IP>:8081`, log in with your
+   normal modem Web UI credentials; an unobtrusive "SMS Inbox" floating button appears in
+   the bottom-right corner. The button is hidden on the login screen.
+2. **Automatic OTP detection & 1-click copy** — numeric OTP codes (4–8 digits) in OTP-like
+   messages are extracted, highlighted, and copyable with one click.
+3. **JSON API for automation** — `/api/sms` returns the parsed, deduplicated, newest-first
+   inbox with OTPs pre-extracted. Optional token auth for Telegram/WhatsApp/cron bots.
+4. **Self-healing** — `SmsService` is `START_STICKY` and auto-starts on boot
+   (`BootReceiver`); the HTTP server restarts itself if it ever dies.
+5. **Zero dependencies on the host** — install once via `adb`, done.
 
 ---
 
-## System Architecture
+## 1. Build the APK (required)
 
-```
-+-------------------------------------------------------------+
-| Client Browser (PC / Laptop / Phone)                        |
-|                                                             |
-| - URL: http://localhost:8080/     -> Stock UI + SMS Tab     |
-| - URL: http://localhost:8080/sms  -> Standalone SMS Inbox   |
-+------------------------------+------------------------------+
-                               | HTTP :8080
-                               v
-+-------------------------------------------------------------+
-| Linux Host (PC / Server / SBC / Mini PC / Router VM)        |
-|                                                             |
-| Service: `ufi-sms-web.service`                              |
-| Script : `/opt/ufi-sms/ufi-sms-web.js`                      |
-|  - Auto-detects modem gateway IP on usb0                    |
-|  - Reverse-proxies modem Web UI & sanitizes NanoHTTPD       |
-|  - Serves JSON API at `/api/sms` (dedup + OTP extraction)   |
-|  - Injects `sms-inbox.js` client adapter                    |
-|  - Background ADB health watchdog                           |
-+------------------------------+------------------------------+
-                               | USB RNDIS (usb0) + ADB
-                               v
-+-------------------------------------------------------------+
-| Qualcomm 4G USB Modem (MSM8916 / Android)                   |
-|                                                             |
-| 1. Port 80 (cpeweb.apk / web server): Stock Modem Web UI    |
-| 2. Port 8088 (`com.ufi.smsfwd`): Android SMS Daemon         |
-|    - BroadcastReceiver: Captures incoming SMS_RECEIVED      |
-|    - Telephony Inbox: Reads content://sms/inbox             |
-+-------------------------------------------------------------+
-```
+There is **no prebuilt APK** in this repository — you build and sign it yourself:
 
----
-
-## Requirements
-
-* **Hardware:**
-  * Qualcomm MSM8916 / Snapdragon 410 4G USB Modem (UFI003, UFI103, UFI JZ, etc.).
-  * Linux Host (PC, Server, SBC, Mini PC, Raspberry Pi, Orange Pi, VM).
-* **Software:**
-  * Linux OS (Ubuntu, Debian, Armbian, Raspberry Pi OS, Arch, etc.).
-  * Modem connected and recognized as a USB network device (`usb0`).
-
----
-
-## Quick Installation
-
-### Step 1: Copy repository to the Linux Host
-From your workstation, copy this repository to the target Linux host:
 ```bash
-rsync -avz --exclude '.git' /path/to/ufi-4g/ root@<HOST_IP>:/root/ufi-4g/
+git clone <this-repo> && cd qualcomm-4g-sms-web
+bash app/build.sh
+# -> app/out/ufi-sms-proxy.apk
 ```
 
-### Step 2: Run the provisioning script on the Host
-Connect to the host via SSH and run:
-```bash
-sudo bash /root/ufi-4g/tools/provision.sh
-```
+Requirements on the build machine (macOS or Linux):
+* **JDK 8+** (`brew install openjdk` / `apt install default-jdk`)
+* `curl`, `unzip`, `python3`, `bash`
 
-The `provision.sh` script automatically:
-1. Verifies and installs `adb` and `nodejs` packages if missing.
-2. Waits for the modem ADB device and detects the modem IP on `usb0`.
-3. Installs the signed SMS daemon APK (`app/ufi10.apk`) onto the modem.
-4. Deploys proxy and client adapter files to `/opt/ufi-sms/`.
-5. Configures, enables, and starts the systemd service `ufi-sms-web.service`.
-6. Executes end-to-end automated connectivity tests.
+Everything else is downloaded automatically on first run into `~/.android-ufi-sdk`:
+* `android.jar` API 19 (platform, for compiling against KitKat)
+* Android build-tools r33 (`aapt`, `zipalign`, `apksigner`)
+* `dx.jar` (dexer, taken from build-tools r30 — pure Java, works on macOS too)
+
+The APK is signed with the debug keystore `app/ks.jks` (password in `app/build.sh`).
+That is fine for sideloading via `adb`; do not publish this keystore if you fork the project.
+
+Override locations via env: `SDK_DIR`, `ANDROID_JAR`, `DX_JAR` (see `app/build.sh`).
 
 ---
 
-## Usage
+## 2. Install onto the modem
 
-Following installation, the service binds securely to `127.0.0.1:8080`.
+Plug the modem into your computer (it enumerates as a Qualcomm Android device), then:
 
-To access the Web UI from your computer/laptop:
-
-1. Open an SSH port-forwarding tunnel in your terminal:
-   ```bash
-   ssh -L 8080:localhost:8080 root@<HOST_IP>
-   ```
-2. Open your browser:
-
-### 1. Integrated Web UI
-Open:
-```
-http://localhost:8080/
-```
-* **Login Protection:** The floating SMS button remains hidden on the login screen.
-* **Floating Widget:** Immediately after logging in, an unobtrusive "SMS Inbox" floating button with a counter badge appears in the bottom-right corner. Clicking it opens a modal containing your SMS messages and extracted OTP codes.
-
-### 2. Protected JSON API (Automation & Bots)
-
-The `/api/sms` endpoint is protected by default:
-* **From Web Browser:** Authenticated automatically via session cookie upon modem Web UI login.
-* **From Automation Scripts / cURL / Bots:** Authenticated via API token.
-
-#### Configuring an API Token:
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-2. Open `.env` and set your desired secret token:
-   ```env
-   SMS_API_TOKEN=your_secure_token_here
-   ```
-3. Restart the service to apply changes:
-   ```bash
-   sudo systemctl restart ufi-sms-web.service
-   ```
-
-#### Querying the API with a Token:
 ```bash
-# Query via query parameter
-curl "http://127.0.0.1:8080/api/sms?token=your_secure_token_here"
-
-# Or query via HTTP Header
-curl -H "X-API-Token: your_secure_token_here" http://127.0.0.1:8080/api/sms
-
-# Or query via Bearer Authorization
-curl -H "Authorization: Bearer your_secure_token_here" http://127.0.0.1:8080/api/sms
-
-# Force resynchronization with modem SIM card inbox
-curl "http://127.0.0.1:8080/api/sms?token=your_secure_token_here&sync=1"
+adb install -r app/out/ufi-sms-proxy.apk
+adb shell am startservice -n com.ufi.smsfwd/.SmsService
 ```
 
-Example JSON response:
+That's the whole installation. The service also starts automatically after modem reboots.
+
+---
+
+## 3. Usage
+
+### Web UI (with SMS/OTP widget)
+
+From a Linux host that has the modem's `usb0` network interface:
+
+```
+http://192.168.18.1:8081
+```
+
+(The modem's gateway IP varies per vendor — `192.168.18.1`, `192.168.0.1`, … — check your
+`usb0` interface or the modem's sticker.)
+
+**From macOS** (no RNDIS driver, so `usb0` does not exist): use adb port forwarding instead:
+
+```bash
+adb forward tcp:8081 tcp:8081
+# then open http://localhost:8081
+```
+
+Log in with your normal modem Web UI credentials. After login, the **SMS Inbox** floating
+button appears at the bottom-right; clicking it opens the inbox modal with a 10-second
+auto-refresh, a "Sync SIM" button (forces an immediate telephony-inbox pull), and
+copy buttons for OTP codes and full message bodies.
+
+### JSON API (automation & bots)
+
+| Endpoint | Description |
+| :--- | :--- |
+| `GET /api/sms` | Parsed inbox: deduplicated, newest first, OTPs pre-extracted |
+| `GET /api/sms?sync=1` | Same, but first forces a re-poll of the SIM inbox (`DbPuller`) |
+| `GET /api/logout` | Clears the session cookie (used by the widget) |
+| `GET /sms-inbox.js` | The widget script (served by the APK itself) |
+
+Example response:
+
 ```json
 {
   "ok": true,
   "count": 1,
   "messages": [
     {
-      "id": "YmltYSsgT1RQfDIw",
-      "source": "IN",
-      "sender": "bima+ OTP",
-      "date": "2026-10-28 15:26:31",
-      "body": "<#> OTP: 130807 is valid for 5 minutes.",
-      "otp": "130807"
+      "id": "Mzg4OHwyMDI2LTEw",
+      "source": "DB",
+      "sender": "3888",
+      "date": "2026-10-29 19:22:10",
+      "body": "Kode verifikasi Shopee: 918273. Jangan bagikan. Berlaku 5 menit",
+      "otp": "918273"
     }
   ]
 }
 ```
 
-If an unauthorized request is made without a session cookie or token, the API responds:
-```json
-HTTP/1.1 401 Unauthorized
-{
-  "ok": false,
-  "error": "Unauthorized. Please login to the Modem Web UI or provide a valid API token (?token=YOUR_TOKEN)."
-}
-```
-    }
-  ]
-}
-```
+`source` is `IN` (captured live via broadcast) or `DB` (pulled from the telephony inbox).
 
 ---
 
-## Network Access & Security (Localhost by Default)
+## API token — and how it relates to the Web UI password
 
-A USB modem functions as a local peripheral dedicated exclusively to the host system it is attached to. To prevent unauthorized network eavesdropping on incoming OTP messages, the service binds by default to:
+**The API token is completely separate from the modem Web UI password.**
 
-**`127.0.0.1:8080` (Localhost only)**
+* The **Web UI password** belongs to the modem's stock web interface (`cpeweb.apk`). It
+  protects the browser UI and is what you type at the login page. This APK does not read,
+  know, or change it.
+* The **API token** is a secret **you create yourself** on the modem. It only protects the
+  JSON API (`/api/sms`) from scripted access.
 
-The service is accessible only from the host itself and is not exposed to external network interfaces by default.
+Setup:
+
+```bash
+adb shell 'echo -n "CHANGE_ME_STRONG_SECRET" > /sdcard/ufi/token.txt'
+```
+
+The file is read at every request — no service restart needed. Delete the file to disable
+token protection entirely.
+
+Behavior:
+
+* **No token file** → `/api/sms` is open (fine when the modem is only reachable over USB).
+* **Token file present** → every `/api/sms` request must supply the token via one of:
+
+```bash
+# query parameter
+curl "http://localhost:8081/api/sms?token=CHANGE_ME_STRONG_SECRET"
+
+# HTTP header
+curl -H "X-API-Token: CHANGE_ME_STRONG_SECRET" http://localhost:8081/api/sms
+
+# bearer authorization
+curl -H "Authorization: Bearer CHANGE_ME_STRONG_SECRET" http://localhost:8081/api/sms
+```
+
+Wrong or missing token → `401 Unauthorized`. The floating widget does **not** need the
+token (it runs in your already-authenticated browser session); the token is only for
+external scripts and bots.
+
+> If you expose the modem's Wi-Fi AP to other people, set a token — otherwise anyone on
+> that network can read `/api/sms` (and the daemon port `8088`, see below).
 
 ---
 
-### Access Methods
+## Port configuration
 
-#### 1. SSH Port Forwarding (Recommended)
-No firewall rules or router port changes required. Run on your client workstation:
-```bash
-ssh -L 8080:localhost:8080 user@<HOST_IP>
-```
-Then navigate to:
-* Integrated Modem Web UI: **`http://localhost:8080/`**
-* Standalone SMS Inbox: **`http://localhost:8080/sms`**
+* **Proxy/widget/API port**: default **`8081`**. To change it, write the new port to a file
+  on the modem and restart the service:
 
-#### 2. Direct Access on Linux Host GUI
-If the host runs a graphical desktop environment:
-```
-http://127.0.0.1:8080/
-```
+  ```bash
+  adb shell 'echo 9090 > /sdcard/ufi/port.txt'      # proxy now listens on 9090
+  adb shell am force-stop com.ufi.smsfwd
+  adb shell am startservice -n com.ufi.smsfwd/.SmsService
+  ```
 
-#### 3. Exposing to LAN / Tailscale / External Networks (Optional)
-If you prefer to make the Web UI accessible across your local network (LAN/Wi-Fi) or VPN mesh without an SSH tunnel:
-1. Edit the systemd service:
-   ```bash
-   sudo systemctl edit --full ufi-sms-web.service
-   ```
-2. Change `BIND_HOST` to `0.0.0.0`:
-   ```ini
-   Environment=BIND_HOST=0.0.0.0
-   ```
-3. Save and restart:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart ufi-sms-web.service
-   ```
-   The UI will now be reachable directly via the host's LAN or Tailscale IP (e.g., `http://192.168.1.50:8080/` or `http://100.89.7.3:8080/`).
+  Valid range: 1–65535. Delete the file to return to 8081.
 
-#### 4. Reverse Proxy Setup (Nginx, Caddy, Cloudflare Tunnel)
-To publish the dashboard under a private or internal domain with SSL/TLS, forward incoming traffic to `http://127.0.0.1:8080`.
-Sample Nginx block:
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-}
-```
+* **Internal SMS daemon port** (`/health`, `/sync`, `/raw`, legacy): fixed **`8088`**.
+  Sensitive endpoints on it (`/raw`, `/ussd`, `/tx`, `/info`, `/sms.json`) honor the same
+  token file when one is configured (`?token=...`).
+
+* The **stock Web UI keeps its port 80**, untouched — you can still use
+  `http://192.168.18.1/` normally without the widget.
 
 ---
 
-## Configuration Reference
+## Files on the modem
 
-Service configuration can be adjusted using environment variables in the systemd service definition (`/etc/systemd/system/ufi-sms-web.service`):
+| Path | Purpose |
+| :--- | :--- |
+| `/sdcard/ufi/recv.txt` | SMS log (`IN\|sender\|date\|body` / `DB\|...` lines) — source for `/api/sms` |
+| `/sdcard/ufi/token.txt` | Optional API token (see above) |
+| `/sdcard/ufi/port.txt` | Optional proxy port override (see above) |
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `PORT` | `8080` | Local HTTP listening port on the host system. |
-| `BIND_HOST` | `127.0.0.1` | Network interface to bind (`127.0.0.1` for local-only security, or `0.0.0.0` for all interfaces). |
-| `MODEM_HOST` | `Auto-detect` | Gateway IP address of the modem on `usb0` (automatically discovered, e.g. `192.168.18.1`). |
-| `MODEM_WEB_PORT` | `80` | Upstream port of the modem's native Web UI. |
-| `MODEM_SMS_PORT` | `8088` | Upstream port of the modem's internal Android SMS daemon. |
+Clear the stored SMS log:
 
----
-
-## Directory Structure
-
-```
-ufi-4g/
-├── README.md               # Primary project documentation
-├── app/                    # Android SMS daemon source and build scripts (API 19 / KK 4.4.4)
-│   ├── AndroidManifest.xml # Permission declarations and intent receivers
-│   ├── build.sh            # Standalone APK compilation script
-│   ├── src/                # Java source code (SmsReceiver, DbPuller, HttpServer)
-│   └── ufi10.apk           # Pre-compiled and signed APK
-├── server/                 # Host proxy and client integration components
-│   ├── ufi-sms-web.js      # Reverse proxy, stream sanitizer, and SMS API server
-│   ├── sms-inbox.js        # Universal client-side DOM injector and UI widget
-│   └── systemd/            # Systemd service unit definition
-├── tools/
-│   └── provision.sh        # Automated single-command installation script
-└── docs/                   # Hardware notes and research references
-```
-
----
-
-## Maintenance & Troubleshooting
-
-### Check service status on host:
-```bash
-sudo systemctl status ufi-sms-web.service
-```
-
-### View real-time service logs:
-```bash
-sudo journalctl -u ufi-sms-web.service -f
-```
-
-### Verify ADB connectivity with the modem:
-```bash
-adb devices
-adb shell 'dumpsys telephony.registry' | grep -E "mServiceState|mSignalStrength"
-```
-
-### Send a synthetic SMS for testing:
-```bash
-adb shell 'echo "IN|bima+|$(date \"+%Y-%m-%d %H:%M:%S\")|Your verification code is: 772910." >> /sdcard/ufi/recv.txt'
-```
-
-### Clear stored SMS message log on the modem:
 ```bash
 adb shell 'rm -f /sdcard/ufi/recv.txt'
 ```
 
 ---
 
+## Directory structure
+
+```
+qualcomm-4g-sms-web/
+├── README.md                # this file
+├── LICENSE                  # MIT
+├── app/                     # Android APK (the only deployable component)
+│   ├── AndroidManifest.xml  # permissions & components (API 19)
+│   ├── build.sh             # self-contained build: downloads toolchain, compiles, signs
+│   ├── ks.jks               # debug signing keystore (sideload only)
+│   └── src/com/ufi/smsfwd/
+│       ├── SmsReceiver.java # SMS_RECEIVED broadcast -> /sdcard/ufi/recv.txt
+│       ├── DbPuller.java    # polls content://sms/inbox (60s + on-demand sync)
+│       ├── SmsService.java  # START_STICKY service; starts both HTTP servers
+│       ├── HttpServer.java  # internal daemon :8088 (health/sync/raw)
+│       ├── ProxyServer.java # public proxy :8081 + /api/sms + widget injection
+│       ├── BootReceiver.java# auto-start on boot
+│       ├── Info.java, Tx.java, RfMode.java, KickReceiver.java, Util.java
+├── server/
+│   └── sms-inbox.js         # the widget (single source of truth; embedded into the
+│                            #   APK at build time as generated SmsInboxJs.java)
+└── docs/                    # hardware research notes & code-review findings
+```
+
+---
+
+## Maintenance & Troubleshooting
+
+```bash
+# service running?
+adb shell 'netstat -ltn | grep 8081'
+
+# restart the service
+adb shell am force-stop com.ufi.smsfwd
+adb shell am startservice -n com.ufi.smsfwd/.SmsService
+
+# logs (the APK logs to /sdcard/ufi/recv.txt and to logcat tag "ufi")
+adb logcat -d -s ufi:W
+```
+
+* **Widget doesn't appear?** It only shows after you are logged into the stock Web UI
+  (it hides itself on the login page by design).
+* **`/api/sms` returns `ok:false, error:"Failed to communicate..."`** — the modem's SMS
+  daemon on `:8088` is down; restarting `SmsService` (above) brings it back.
+* **Wrong dates on messages?** Without a SIM card the modem's clock is never synchronized
+  (it stays in 1970). With a SIM, network time fixes this automatically.
+* **SMS not captured live?** The broadcast capture path (`SmsReceiver`) needs a real
+  incoming SMS; the `DbPuller` poll path (60s / `sync=1`) picks up anything that lands in
+  the telephony inbox regardless.
+
+---
+
+## Security notes
+
+* Set an API token if the modem's interfaces (USB network, Wi-Fi AP) are reachable by
+  others (see "API token" above).
+* The internal daemon (`:8088`) exposes USSD dialing and raw SMS dumps; it is meant for
+  the local loopback/host only. Token-protect it by creating `/sdcard/ufi/token.txt`.
+* Message bodies and OTP codes live in `/sdcard/ufi/recv.txt` on the modem's (emulated)
+  SD storage — wipe it if you resell the dongle.
+
 ## License
+
 Licensed under the [MIT License](LICENSE). Free for personal and commercial use.

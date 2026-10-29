@@ -26,6 +26,16 @@
     return null;
   }
 
+  // HTML-escape helper (prevents stored XSS via sender/date/body fields)
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   // Detect whether the user is logged into the modem Web UI
   function isUserLoggedIn() {
     // 1. Check modem-specific session in sessionStorage (Wowi / Qualcomm CPE standard)
@@ -202,29 +212,29 @@
         otpCell = `
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="font-size: 15px; font-weight: bold; letter-spacing: 2px; color: #f56c6c; background: #fef0f0; border: 1px solid #fde2e2; padding: 2px 8px; border-radius: 4px;">
-              ${otp}
+              ${escapeHtml(otp)}
             </span>
-            <button type="button" class="sms-copy-btn" data-copy-val="${otp}" data-copy-lbl="OTP Code" style="padding: 3px 8px; font-size: 12px; cursor: pointer; background: #ecf5ff; border: 1px solid #d9ecff; color: #409eff; border-radius: 4px;">
+            <button type="button" class="sms-copy-btn" data-copy-val="${escapeHtml(otp)}" data-copy-lbl="OTP Code" style="padding: 3px 8px; font-size: 12px; cursor: pointer; background: #ecf5ff; border: 1px solid #d9ecff; color: #409eff; border-radius: 4px;">
               Copy
             </button>
           </div>
         `;
       }
 
-      let bodyText = (msg.body || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+      let bodyText = escapeHtml(msg.body || '').replace(/\n/g, '<br>');
       if (otp) {
-        bodyText = bodyText.replace(otp, `<mark style="background: #ffe066; padding: 1px 4px; border-radius: 2px; font-weight: bold;">${otp}</mark>`);
+        bodyText = bodyText.split(escapeHtml(otp)).join(`<mark style="background: #ffe066; padding: 1px 4px; border-radius: 2px; font-weight: bold;">${escapeHtml(otp)}</mark>`);
       }
 
       return `
         <tr style="border-bottom: 1px solid #ebeef5; ${idx % 2 === 1 ? 'background: #fafafa;' : ''}">
           <td style="padding: 12px 14px; font-weight: 600; color: #303133; white-space: nowrap;">
             <span style="background: #f4f4f5; border: 1px solid #e9e9eb; color: #909399; padding: 2px 8px; border-radius: 4px; font-size: 12px;">
-              ${msg.sender || 'Unknown'}
+              ${escapeHtml(msg.sender || 'Unknown')}
             </span>
           </td>
           <td style="padding: 12px 14px; color: #606266; font-size: 13px; white-space: nowrap;">
-            ${msg.date || '-'}
+            ${escapeHtml(msg.date || '-')}
           </td>
           <td style="padding: 12px 14px; color: #303133; font-size: 13px; line-height: 1.5; word-break: break-word;">
             ${bodyText}

@@ -76,34 +76,51 @@ public class HttpServer {
             if (req == null) return;
             String path = req.substring(req.indexOf(' ') + 1, req.lastIndexOf(' '));
             path = java.net.URLDecoder.decode(path, "UTF-8");
+            String query = "";
+            int qIdx = path.indexOf('?');
+            if (qIdx >= 0) query = path.substring(qIdx + 1);
             if (path.indexOf("ussd=") >= 0) {
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else {
                 String code = path.substring(path.indexOf("ussd=") + 5);
                 int e = code.indexOf('&');
                 if (e > 0) code = code.substring(0, e);
                 dialUssd(code);
                 body = ("{\"ok\":1,\"duaded\":\"" + code + "\"}\n").getBytes("UTF-8");
+                }
             } else if (path.startsWith("/raw")) {
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else {
                 File f = new File("/sdcard/ufi/recv.txt");
                 if (!f.exists()) { body = "{}\n".getBytes(); }
                 else body = readFile(f);
+                }
             } else if (path.startsWith("/info")) {
-                body = Info.snapshot(appCtx).getBytes("UTF-8");
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else body = Info.snapshot(appCtx).getBytes("UTF-8");
             } else if (path.startsWith("/tx")) {
-                body = Tx.list().getBytes("UTF-8");
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else body = Tx.list().getBytes("UTF-8");
             } else if (path.indexOf("mode=") >= 0) {
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else {
                 String m = path.substring(path.indexOf("mode=") + 5);
                 int e = m.indexOf('&');
                 if (e > 0) m = m.substring(0, e);
                 String r = RfMode.set(m.trim());
                 Util.append(" RF|mode|" + m + "|" + r + "\n");
                 body = ("{\"mode\":\"" + m + "\",\"res\":\"" + r + "\"}\n").getBytes("UTF-8");
+                }
             } else if (path.startsWith("/sync")) {
                 int n = DbPuller.pull(appCtx);
                 body = ("{\"pulled\":" + n + "}\n").getBytes("UTF-8");
             } else if (path.startsWith("/sms.json")) {
+                if (!Util.tokenOk(query)) { body = authErr(); }
+                else {
                 File f = new File("/sdcard/ufi/recv.txt");
                 if (!f.exists()) { body = "[]\n".getBytes(); }
                 else body = jsonFile(f);
+                }
             } else if (path.startsWith("/health")) {
                 body = ("{\"up\":1}\n").getBytes();
             } else {
@@ -119,6 +136,10 @@ public class HttpServer {
         } finally {
             try { s.close(); } catch (Throwable ignore) {}
         }
+    }
+
+    static byte[] authErr() {
+        return ("{\"ok\":false,\"error\":\"Unauthorized. Provide valid token (?token= or X-API-Token).\"}\n").getBytes();
     }
 
     static void dialUssd(String code) {
