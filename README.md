@@ -54,46 +54,28 @@ computer is `adb` (to install the APK and, optionally, to forward the port).
 
 ---
 
-## 1. Build the APK (required)
+## 1. Install the prebuilt APK (recommended)
 
-There is **no prebuilt APK** in this repository — you build and sign it yourself:
-
-```bash
-git clone <this-repo> && cd qualcomm-4g-sms-web
-bash app/build.sh
-# -> app/out/ufi-sms-proxy.apk
-```
-
-Requirements on the build machine (macOS or Linux):
-* **JDK 8+** (`brew install openjdk` / `apt install default-jdk`)
-* `curl`, `unzip`, `python3`, `bash`
-
-Everything else is downloaded automatically on first run into `~/.android-ufi-sdk`:
-* `android.jar` API 19 (platform, for compiling against KitKat)
-* Android build-tools r33 (`aapt`, `zipalign`, `apksigner`)
-* `dx.jar` (dexer, taken from build-tools r30 — pure Java, works on macOS too)
-
-The APK is signed with the debug keystore `app/ks.jks` (password in `app/build.sh`).
-That is fine for sideloading via `adb`; do not publish this keystore if you fork the project.
-
-Override locations via env: `SDK_DIR`, `ANDROID_JAR`, `DX_JAR` (see `app/build.sh`).
-
----
-
-## 2. Install onto the modem
+If you don't want to build anything, use the prebuilt APK shipped in this repository:
+**[`app/ufi-sms-proxy.apk`](app/ufi-sms-proxy.apk)** — built from this exact source tree
+with `app/build.sh` and signed with the project's debug keystore.
 
 Plug the modem into your computer (it enumerates as a Qualcomm Android device), then:
 
 ```bash
-adb install -r app/out/ufi-sms-proxy.apk
+adb install -r app/ufi-sms-proxy.apk
 adb shell am startservice -n com.ufi.smsfwd/.SmsService
 ```
 
 That's the whole installation. The service also starts automatically after modem reboots.
 
+> Prefer to review and build the APK yourself? See
+> [Build it yourself](#build-the-apk-yourself-optional) below — it produces the identical
+> artifact from the same source.
+
 ---
 
-## 3. Usage
+## 2. Usage
 
 ### Web UI (with SMS/OTP widget)
 
@@ -160,14 +142,15 @@ Example response:
 * The **API token** is a secret **you create yourself** on the modem. It only protects the
   JSON API (`/api/sms`) from scripted access.
 
-Setup:
+Setup (same pattern as the port override — just write a file via `adb`, no rebuild or
+restart needed; the file is read on every request):
 
 ```bash
 adb shell 'echo -n "CHANGE_ME_STRONG_SECRET" > /sdcard/ufi/token.txt'
 ```
 
-The file is read at every request — no service restart needed. Delete the file to disable
-token protection entirely.
+You can change or rotate the token at any time by overwriting that file; delete it to
+disable token protection entirely.
 
 Behavior:
 
@@ -216,6 +199,35 @@ external scripts and bots.
 
 ---
 
+## Build the APK yourself (optional)
+
+Instead of the prebuilt `app/ufi-sms-proxy.apk`, you can reproduce the build from source:
+
+```bash
+git clone <this-repo> && cd qualcomm-4g-sms-web
+bash app/build.sh
+# -> app/out/ufi-sms-proxy.apk   (byte-for-byte the same steps as the shipped APK)
+```
+
+Requirements on the build machine (macOS or Linux):
+* **JDK 8+** (`brew install openjdk` / `apt install default-jdk`)
+* `curl`, `unzip`, `python3`, `bash`
+
+Everything else is downloaded automatically on first run into `~/.android-ufi-sdk`:
+* `android.jar` API 19 (platform, for compiling against KitKat)
+* Android build-tools r33 (`aapt`, `zipalign`, `apksigner`)
+* `dx.jar` (dexer, taken from build-tools r30 — pure Java, works on macOS too)
+
+The APK is signed with the debug keystore `app/ks.jks` (password in `app/build.sh`).
+That is fine for sideloading via `adb`; if you fork the project, generate your own keystore.
+
+Override locations via env: `SDK_DIR`, `ANDROID_JAR`, `DX_JAR` (see `app/build.sh`).
+
+If you rebuild after modifying `server/sms-inbox.js` (the widget), just re-run
+`build.sh` — the widget is embedded into the APK automatically at build time.
+
+---
+
 ## Files on the modem
 
 | Path | Purpose |
@@ -239,6 +251,7 @@ qualcomm-4g-sms-web/
 ├── README.md                # this file
 ├── LICENSE                  # MIT
 ├── app/                     # Android APK (the only deployable component)
+│   ├── ufi-sms-proxy.apk    # prebuilt APK — install this if you don't want to build
 │   ├── AndroidManifest.xml  # permissions & components (API 19)
 │   ├── build.sh             # self-contained build: downloads toolchain, compiles, signs
 │   ├── ks.jks               # debug signing keystore (sideload only)
