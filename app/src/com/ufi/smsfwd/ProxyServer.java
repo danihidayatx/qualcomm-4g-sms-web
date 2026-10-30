@@ -363,6 +363,11 @@ public class ProxyServer {
             }
             if (reqBody != null) {
                 req.append("Content-Length: ").append(reqBody.length).append("\r\n");
+            } else if (method.equals("POST") || method.equals("PUT") || method.equals("PATCH")) {
+                // cpeweb's NanoHTTPD blocks forever on POSTs without Content-Length
+                // (e.g. the frontend sends "Content-Length: 0" with an empty body) —
+                // always frame body methods explicitly.
+                req.append("Content-Length: 0\r\n");
             }
             req.append("\r\n");
             uo.write(req.toString().getBytes("ISO-8859-1"));
@@ -392,6 +397,9 @@ public class ProxyServer {
 
             String contentType = respHeaders.get("content-type");
             if (contentType == null) contentType = "";
+            // cpeweb labels JSON API responses as "text/html" too — only treat the
+            // payload as HTML (and inject the widget) when it really is markup,
+            // otherwise the <script> tag would corrupt JSON responses.
             boolean isHtml = contentType.toLowerCase().contains("text/html");
 
             // Determine body framing: trust a sane positive content-length,
@@ -428,11 +436,14 @@ public class ProxyServer {
                     } catch (Throwable ignore) {}
                 }
                 String html = new String(payload, "UTF-8");
-                String scriptTag = "\n<script type=\"text/javascript\" src=\"/sms-inbox.js\"></script>\n";
+                // Inject only into real HTML documents (they end with </body>);
+                // JSON/other payloads mislabeled as text/html are passed through untouched.
                 int idx = html.lastIndexOf("</body>");
-                if (idx >= 0) html = html.substring(0, idx) + scriptTag + html.substring(idx);
-                else html = html + scriptTag;
-                payload = html.getBytes("UTF-8");
+                if (idx >= 0) {
+                    String scriptTag = "\n<script type=\"text/javascript\" src=\"/sms-inbox.js\"></script>\n";
+                    html = html.substring(0, idx) + scriptTag + html.substring(idx);
+                    payload = html.getBytes("UTF-8");
+                }
             }
 
             StringBuilder h = new StringBuilder();
